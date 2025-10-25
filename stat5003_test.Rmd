@@ -1,0 +1,472 @@
+---
+title: "Stat5003 W08G04 Project: Plan and EDA"
+output:
+  html_document:
+    fig_caption: yes
+    number_sections: yes
+    self_contained: yes
+    theme: flatly
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    code_folding: hide
+---
+
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(readr)
+library(lubridate)
+library(zoo)   
+library(ggplot2)
+library(tidyverse)
+library(corrplot)
+
+set.seed(500308)
+```
+
+### 1.  Define the problem
+
+#### 1.1 Research Question
+Our project is to research the air pollution situation in Sydney and analyze which air quality indicators such as meteorological conditions and other pollutant concentrations has significant impact on air pollution. By consolidating and processing hourly sampling data from three air monitoring stations (Randwick, Prospect and Liverpool) in Sydney, we are able to character Sydney’s air quality changes and explore the main influencing factors.
+
+#### 1.2 Classification Problem
+In this report, we merge and unify features across three datasets, convert dates to four seasonal variables and divide time into three types of human activity intensity periods: high, medium and low, to capture the changes of seasonality and periodicity. We also base on the Australian Department of Health’s recommendations on PM2.5, divide PM2.5 into five levels: extremely poor, very poor, poor, fair and good. This intuitively reflect the impact of air quality on health. We also use various methods such as deletion, imputation and grouping mean filling to fill in the missing values, ensuring the integrity and accuracy of the data.
+In this frame, we use PM2.5 levels as an important indicator of air pollution to further translate this into categorical variables, which make our research question into typical classification modeling tasks. Pollutant concentrations (e.g., CO, NO₂, O₃) (Fenger, 1999) and meteorological conditions (e.g., temperature, humidity, wind speed) (Han, Zhou, Li, & Li, 2014) are used as input features, PM2.5 level as the target variable. The study aims to explore the performance of different classification models (such as logistic regression, K-nearest neighbor, support vector machine) in predicting air quality.
+
+#### 1.3 Importance
+The important of this research question lies in the fact that air quality directly related to physical health, quality of life and environmental sustainability of residents (Schwela, 2006). Australia especially in Sydney, often faced the challenge of air pollution incidents recently, including smoke pollution from summer bush fires (Akimoto, 2003), as well as lasting impacts on air quality from transport and industrial emissions. By predicting air pollution level and identifying key influencing factors, this research can help to improve efficiency of environmental monitoring and early warning, providing scientific reference to government and public, helping formulate air pollution prevention and control policies, and improving community health awareness (Baldasano, Valera, & Jiménez, 2003).
+
+#### 1.4 Conclusion
+In conclusion, this research not only has academic value, which verifies the effectiveness of the classification model in the context of combining data modeling with environmental monitoring, but also has practical significance, which provides data-driven tools and methodological support for air quality management in Sydney and even Australia as a whole.
+
+### 2. Describe the data
+
+#### 2.1. Data sources
+For this project, we used a dataset from the New South Wales government's public air quality and meteorological monitoring platform. This website provides public data on air quality and meteorological conditions at all different air monitoring sites within the New South Wales jurisdiction. We selected air and meteorological monitoring datasets from three sites: Randwick in eastern Sydney, Prospect in northwest Sydney, and Liverpool in southwest Sydney. The link is https://www.airquality.nsw.gov.au/air-quality-data-services/data-download-facility?
+
+```{r echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+path <- "C:/Users/14162/OneDrive/Desktop/stat5003 assignment 1.0/"
+
+prospect  <- read.csv(paste0(path, "1.csv"))
+liverpool <- read.csv(paste0(path, "Air_table_LIVERPOOL.csv"))
+randwick  <- read.csv(paste0(path, "Air_table_RANDWICK.csv"))
+```
+
+#### 2.2 Data type
+The dataset spans from May 4, 2017, to September 1, 2025, consists of 219,096 rows and 18 columns, representing hourly averages of observed values across three monitoring sites: LIVERPOOL, PROSPECT, and RANDWICK. It covers a wide range of variables, including meteorological factors (WDR, TEMP, WSP, HUMID, SOLAR, RAIN), gaseous pollutants (SO2, NO, NO2, CO), ozone (8-hour rolling average), particulate matter (PM10, PM2.5 1h average), optical scattering (NEPH), SD1, and a station label. Apart from the time-dependent date and time features, all variables are numeric, resulting in a dataset composed of 15 numeric variables and 3 categorical time features, offering comprehensive spatial coverage, temporal granularity, and pollutant–meteorology representation suitable for air quality analysis.
+
+```{r echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+safe_quant <- function(x, p){
+  if (!is.numeric(x) || all(is.na(x))) return(NA_real_)
+  as.numeric(quantile(x, p, na.rm = TRUE, type = 7))
+}
+safe_min  <- function(x) if (!is.numeric(x) || all(is.na(x))) NA_real_ else suppressWarnings(min(x, na.rm = TRUE))
+safe_max  <- function(x) if (!is.numeric(x) || all(is.na(x))) NA_real_ else suppressWarnings(max(x, na.rm = TRUE))
+safe_mean <- function(x) if (!is.numeric(x) || all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE)
+safe_sd   <- function(x) if (!is.numeric(x) || all(is.na(x))) NA_real_ else sd(x, na.rm = TRUE)
+
+get_mode <- function(v){
+  v2 <- v[!is.na(v)]
+  if (length(v2) == 0) return(c(mode_value = NA_character_, mode_count = NA_integer_))
+  tb <- sort(table(v2), decreasing = TRUE)
+  c(mode_value = names(tb)[1], mode_count = as.integer(tb[1]))
+}
+
+var_type_stats <- function(df){
+  types    <- sapply(df, function(x) class(x)[1])
+  is_num   <- sapply(df, is.numeric)
+  n        <- sapply(df, function(x) sum(!is.na(x)))
+  n_unique <- sapply(df, function(x) length(unique(x)))
+  na_pct   <- round(sapply(df, function(x) mean(is.na(x)) * 100), 2)
+
+  mean_v <- sapply(df, function(x) if (is.numeric(x)) safe_mean(x) else NA_real_)
+  sd_v   <- sapply(df, function(x) if (is.numeric(x)) safe_sd(x)   else NA_real_)
+  min_v  <- sapply(df, function(x) if (is.numeric(x)) safe_min(x)  else NA_real_)
+  q25_v  <- sapply(df, function(x) if (is.numeric(x)) safe_quant(x, 0.25) else NA_real_)
+  med_v  <- sapply(df, function(x) if (is.numeric(x)) safe_quant(x, 0.50) else NA_real_)
+  q75_v  <- sapply(df, function(x) if (is.numeric(x)) safe_quant(x, 0.75) else NA_real_)
+  max_v  <- sapply(df, function(x) if (is.numeric(x)) safe_max(x)  else NA_real_)
+
+  mode_v <- sapply(df, function(x) if (!is.numeric(x)) get_mode(x)[["mode_value"]] else NA_character_)
+  mode_c <- sapply(df, function(x) if (!is.numeric(x)) get_mode(x)[["mode_count"]] else NA_integer_)
+
+  tibble(
+    variable = names(df), type = types, n = n, n_unique = n_unique, na_pct = na_pct,
+    mean = mean_v, sd = sd_v, min = min_v, q25 = q25_v, median = med_v, q75 = q75_v, max = max_v,
+    mode = mode_v, mode_count = mode_c
+  )
+}
+
+missing_table <- function(df){
+  tibble(
+    variable = names(df),
+    missing_count = sapply(df, function(x) sum(is.na(x))),
+    missing_pct = round(sapply(df, function(x) mean(is.na(x)) * 100), 2)
+  ) %>% arrange(desc(missing_pct), desc(missing_count))
+}
+```
+
+#### 2.3 Outcome variable
+The target column we need to study is: PM2.5 1-hour average (µg/m³). We plan to provide classification and health recommendations based on the PM2.5 concentration as indicated in the latest version of the report issued by the Australian Health Department's Advisory Committee. The classification is divided into five levels, with the levels ranging from low to high, representing the negative impact on human health from weak to strong. This operation will be processed in the data preparation stage of part 3.
+
+#### 2.4 Dataset challenges
+Key challenges include non-random missingness and unequal coverage across channel, especially OZONE 8h, RAIN, and SOLAR, suggesting period-specific outages, this calls for targeted imputation, selective channel exclusion, or model families robust to missingness. We also need to integrate the three stations’ datasets and account for site effects. Strong multicollinearity among meteorological variables recommends regularization, tree-based ensembles, or dimensionality reduction. Outliers and sensor artifacts—such as spikes during weather extremes, require robust preprocessing. Beside, PM2.5 is discretized for classification, class imbalance and threshold sensitivity must be carefully evaluated and mitigated.
+
+#### 2.5. Dataset criteria
+Large Size: 219,096 records across three stations.
+Messy: substantial missingness in several channels.
+Integration: three Sydney metropolitan monitoring sites datasets, independent station files integrated into one analysis table.
+
+### 3.  Clean and Prepare the Data
+
+#### 3.1 Combined data
+
+In this section, we chose to merge these three datasets. We averaged the 15 common features across the three datasets. For any shared features between the two datasets, we averaged the two datasets and used the last feature directly. This created a new dataset that more accurately represents Sydney's overall air quality. We also simplified the column names for easier analysis.
+
+```{r echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+clean_names <- function(df, site_name) {
+  names(df) <- gsub(site_name, "", names(df), ignore.case = TRUE) 
+  names(df) <- trimws(names(df))                                  
+  return(df)
+}
+
+liverpool <- clean_names(liverpool, "LIVERPOOL.")
+prospect <- clean_names(prospect, "PROSPECT.")
+randwick <- clean_names(randwick, "RANDWICK.")
+
+num1 <- liverpool[ , -(1:2)]
+num2 <- prospect[ , -(1:2)]
+num3 <- randwick[ , -(1:2)]
+
+all_cols <- union(names(num1), union(names(num2), names(num3)))
+
+df_avg <- data.frame(matrix(ncol = length(all_cols), nrow = nrow(liverpool)))
+names(df_avg) <- all_cols
+
+for (col in all_cols) {
+  v1 <- if (col %in% names(num1)) num1[[col]] else NA
+  v2 <- if (col %in% names(num2)) num2[[col]] else NA
+  v3 <- if (col %in% names(num3)) num3[[col]] else NA
+  
+  df_avg[[col]] <- round(rowMeans(cbind(v1, v2, v3), na.rm = TRUE),2)
+}
+
+df_final <- cbind(liverpool[ , 1:2], df_avg)
+
+df_final <- df_final %>%
+  rename(
+    WDR = WDR.1h.average....,
+    TEMP = TEMP.1h.average....,
+    WSP = WSP.1h.average..m.s.,
+    SO2  = SO2.1h.average..pphm.,
+    NO = NO.1h.average..pphm.,
+    NO2  = NO2.1h.average..pphm.,
+    CO = CO.1h.average..ppm.,
+    OZONE = OZONE.1h.average..pphm.,
+    PM10 = PM10.1h.average..µg.m..,
+    PM2.5 = PM2.5.1h.average..µg.m..,
+    HUMID = HUMID.1h.average....,
+    NEPH = NEPH.1h.average..bsp.,
+    SOLAR = SOLAR.1h.average..W.m..,
+    SD1 = SD1.1h.average....,
+    RAIN = RAIN.1h.average..mm.
+  )
+
+head(df_final)
+```
+
+#### 3.2 Change the date to spring, summer, autumn and winter (the seasons in Australia are different from those in the Northern Hemisphere), and divide the time into three stages according to the intensity of human activities.
+
+We discretized date and time features to enable the model to better capture cyclical changes. First, referring to Australia's seasonal divisions, we converted dates into four categorical variables: summer, autumn, winter, and spring. This reflects changes in human activity and air quality caused by climate differences. Second, we categorized the intensity of human activity into three levels: high, medium, and low.
+
+```{r echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+df_final$Date <- as.Date(df_final$Date, format = "%d/%m/%Y")  
+
+df_final$Season <- ifelse(month(df_final$Date) %in% c(12, 1, 2), "Summer",
+                 ifelse(month(df_final$Date) %in% c(3, 4, 5), "Autumn",
+                 ifelse(month(df_final$Date) %in% c(6, 7, 8), "Winter", "Spring")))
+
+df_final$Hour <- as.numeric(sub(":.*", "", df_final$Time))
+
+df_final$Hour[df_final$Hour == 24] <- 0
+
+df_final <- df_final %>%
+  mutate(Hour = case_when(
+    Hour %in% c(7,8,9,11,12,13,17,18,19,20,21) ~ "High",
+    Hour %in% c(10,14,15,16)                   ~ "Middle",
+    TRUE                                       ~ "Low"
+  ))
+
+df_final$Hour <- factor(df_final$Hour, levels = c("Low","Middle","High"))
+
+table(df_final$Season)
+table(df_final$Hour)
+```
+
+
+#### 3.3 Change PM2.5 from continuous numerical values to categorical numerical values.
+
+In this section, we've categorized PM2.5 levels into five levels, based on the latest health advice from the Australian Department of Health Steering Committee on PM2.5 concentrations. These levels, from low to high, represent weak to strong negative impacts on human health. These levels are 0-12.5, 12.5-25, 25-50, 50-150, and >150. This helps the public and researchers understand air quality levels intuitively and provides a reference for health risk management.
+
+```{r echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+df_final <- df_final %>%
+  mutate(
+    PM2.5_level = case_when(
+      PM2.5 >= 0    & PM2.5 <= 12.5  ~ "good",
+      PM2.5 > 12.5  & PM2.5 <= 25    ~ "fair",
+      PM2.5 > 25    & PM2.5 <= 50    ~ "poor",
+      PM2.5 > 50    & PM2.5 <= 150   ~ "very poor",
+      PM2.5 > 150                   ~ "extremely poor",
+      TRUE                         ~ NA_character_   
+    ),
+    PM2.5_level = factor(PM2.5_level,
+                        levels = c("good","fair","poor","very poor","extremely poor"),
+                        ordered = TRUE)
+  )
+
+table(df_final$PM2.5_level, useNA = "ifany")
+```
+
+
+#### 3.4 Handling the missing value
+
+We prioritized removing missing values in the target column, PM2.5, retaining only true values. We also directly deleted columns with a missing ratio greater than 50%, as too little true data could affect model accuracy. For some numerical variables, we used linear interpolation to supplement the data, as these variables exhibit relatively stable changes over time. We padded the data using the mean of the upper and lower data samples, ensuring data accuracy. Categorical data had no missing values, so we did not need to address them. For the remaining numerical data, we chose to fill in the missing values with the mean. Using the generated season and hour as grouping criteria, filling in missing values more closely reflects actual air pollution patterns.
+
+```{r echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+df_final <- df_final %>%
+  filter(!is.na(`PM2.5_level`))
+
+na_rate <- colMeans(is.na(df_final)) 
+df_final <- df_final[ , na_rate <= 0.5]
+
+interp_cols <- c("TEMP", "HUMID", "WSP", "WDR", "SOLAR", "SD1")
+
+df_final[interp_cols] <- lapply(
+  df_final[interp_cols],
+  function(x) round(zoo::na.approx(x, na.rm = FALSE),2)  
+)
+
+num_cols <- c("SO2","NO","NO2","CO","OZONE","PM10","NEPH")
+
+df_final <- df_final %>%
+  group_by(Season, Hour) %>%
+  mutate(across(all_of(num_cols), 
+                ~ ifelse(is.na(.x), round(mean(.x, na.rm=TRUE), 2), .x))) %>%  
+  ungroup()
+
+
+colSums(is.na(df_final))
+```
+
+### 4. Explore and Visualize
+
+#### 4.1 The distribution of PM2.5 Level
+The distribution of PM2.5 levels exhibits significant imbalance, with the vast majority of observations concentrated in the good air quality category, accounting for over 80% of the total sample. In contrast, the proportions falling into the poor, very poor, and extremely poor categories are extremely low.
+
+```{r, echo=TRUE, fig.width=8, fig.height=3}
+ggplot(df_final, aes(x = PM2.5_level)) +
+  geom_bar(fill = "steelblue") +
+  labs(x = "Air Pollution Level", y = "Quantity")
+```
+
+#### 4.2 Relationship Between Pollutant Concentration and PM2.5 Level
+Box plot results reveal significant variations in pollutant concentrations across different PM2.5 levels. Overall, concentrations of pollutants such as CO, NO, NO₂, and PM10 increase markedly as air quality deteriorates. Notably, the median values of NO and PM10 show a consistent upward trend with increasing pollution levels, indicating a strong correlation. In contrast, SO₂ concentrations remain generally low and show no clear trend with PM2.5 levels. Additionally, ozone exhibits a wider distribution under extreme pollution conditions, indicating its greater susceptibility to meteorological factors and secondary chemical reactions.
+
+```{r, echo=TRUE, fig.width=8, fig.height=3}
+pollutants <- c("SO2", "NO", "NO2", "CO", "OZONE", "PM10")
+
+df_final %>%
+  pivot_longer(all_of(pollutants), names_to = "Pollutant", values_to = "Value") %>%
+  ggplot(aes(x = PM2.5_level, y = Value, fill = PM2.5_level)) +
+  geom_boxplot() +
+  facet_wrap(~Pollutant, scales = "free_y") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "PM2.5 Level", y = "Concentration")
+```
+
+#### 4.3 Relationship Between Weather conditions and PM2.5 Levels
+Regarding the relationship between meteorological conditions and PM2.5 levels, HUMID generally increases as air pollution severity rises, suggesting higher humidity may correlate with severe pollution events. TEMP tends to be elevated during severe pollution episodes, with its distribution notably shifting upward under extremely poor and very poor conditions. WSP tends to be lower during poor pollution episodes, suggesting that weak wind conditions may hinder pollutant dispersion, thereby intensifying PM2.5 accumulation. SOLAR exhibits a more dispersed distribution with significant fluctuations during extreme pollution events, potentially linked to seasonal variations and atmospheric photochemical reactions.
+
+```{r, echo=TRUE, fig.width=8, fig.height=3}
+weather_vars <- c("TEMP", "HUMID", "WSP", "SOLAR")
+
+df_final %>%
+  pivot_longer(all_of(weather_vars), names_to = "Weather", values_to = "Value") %>%
+  ggplot(aes(x = PM2.5_level, y = Value, fill = PM2.5_level)) +
+  geom_violin(trim = FALSE, alpha = 0.6) +
+  geom_boxplot(width = 0.2, outlier.shape = NA) +
+  facet_wrap(~Weather, scales = "free_y") +
+  labs(x = "PM2.5 Level", y = "value")
+```
+
+#### 4.4 Heatmap
+The correlation heatmap reveals significant relationships between various pollutants and meteorological variables. Notably, PM2.5 exhibits moderate to strong positive correlations with NO (r ≈ 0.26), NO2 (r ≈ 0.29), CO (r ≈ 0.55), PM10 (r ≈ 0.67), humidity HUMID (r ≈ 0.07), and NEPH (r ≈ 0.85). This indicates that these pollutants and meteorological conditions are key factors influencing PM2.5 concentrations.
+
+In contrast, PM2.5 exhibits weak or near-zero correlations with temperature (TEMP, r ≈ -0.04), ozone (OZONE, r ≈ -0.02), and solar radiation (SOLAR, r ≈ -0.03). This indicates that their direct influence on PM2.5 in the data is negligible, likely reflecting primarily indirect or seasonal effects.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, fig.width=6, fig.height=4}
+numeric_vars <- df_final %>%
+  select(WDR, TEMP, WSP, SO2, NO, NO2, CO, OZONE, PM10, PM2.5, HUMID, NEPH, SOLAR, SD1)
+
+cor_matrix <- cor(numeric_vars, use = "complete.obs")
+corrplot(cor_matrix, method = "color", 
+         tl.cex = 0.7,      
+         number.cex = 0.6,   
+         addCoef.col = "black")
+
+```
+
+#### 4.5 PCA of Air Quality Data
+The PCA scatter plot indicates that the first two principal components already capture some of the differences between air quality levels. We can observe that the “Good” level has the largest number of samples, primarily clustered in the lower region of the coordinate axes, where the distribution is relatively concentrated. In contrast, samples from the “Poor,” “Very Poor,” and “Extremely Poor” levels are distributed in the region above the PC2 axis, revealing a higher degree of dispersion in this area.
+```{r, echo=TRUE, fig.width=8, fig.height=3}
+numeric_vars <- df_final %>%
+  select(WDR, TEMP, WSP, SO2, NO, NO2, CO, OZONE, PM10, PM2.5, HUMID, NEPH, SOLAR, SD1)
+pca_res <- prcomp(numeric_vars, scale. = TRUE)
+
+pca_data <- as.data.frame(pca_res$x)
+pca_data$PM2.5_level <- df_final$PM2.5_level
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = PM2.5_level)) +
+  geom_point(alpha = 0.6) +
+  labs(title = "",
+       x = "PC1",
+       y = "PC2") +
+  theme_minimal()
+
+```
+
+### 5. Modelling Plan
+
+#### 5.1 KNN
+KNN is a classic instance-based classification method that makes predictions by calculating the distance between a sample and data points in the training set. For a sample to be classified, KNN finds its K nearest neighbors and determines the sample's category based on majority voting. To improve performance, we experimented with different distance metrics and K values, selecting the optimal parameter combination through cross-validation. Finally, we evaluated the model using metrics such as accuracy, precision, recall, F1 score, ROC, and AUC to comprehensively examine its classification performance and robustness.
+
+#### 5.2 Logistic Regression
+Logistic regression is a classic classification method that predicts the class by modeling the relationship between input features and classes as a linear combination and mapping the results to probabilities between 0 and 1 using a logistic function. In this study, we first divided the data into training and test sets. We use maximum likelihood estimation (MLE) to solve for model parameters in the training set and set a threshold to convert the probabilities into classification results. We then evaluated the model using metrics such as accuracy, precision, recall, F1 score, receiver operating characteristic (ROC) curves, and area under the curve (AUC) to comprehensively examine its classification performance and robustness.
+
+#### 5.3 Random Forest
+The Random Forest model is an ensemble learning method that enhances classification performance by constructing multiple decision trees and performing voting. This model exhibits robustness, effectively avoiding overfitting and handling highly correlated variables. The feature importance metrics it provides can identify pollutants and meteorological factors with the most significant impact on PM2.5 concentrations. We divided the dataset into training and testing sets for evaluation, and employed K-fold cross-validation within the training set for parameter tuning.We will evaluate the model's performance using four metrics: precision, accuracy, recall, and F1 score.
+
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(caret)
+library(randomForest)
+library(dplyr)
+library(ggplot2)
+library(e1071) 
+
+set.seed(5003) 
+
+
+df_model <- df_final %>%
+  select(-PM2.5) 
+
+
+levels_order <- c("good", "fair", "poor", "very poor", "extremely poor")
+df_model$PM2.5_level <- factor(df_model$PM2.5_level, levels = levels_order, ordered = FALSE)
+
+
+train_index <- createDataPartition(df_model$PM2.5_level, p = 0.70, list = FALSE)
+train_data <- df_model[train_index, ]
+remain_data <- df_model[-train_index, ]
+
+val_index <- createDataPartition(remain_data$PM2.5_level, p = 0.50, list = FALSE)
+val_data <- remain_data[val_index, ]
+test_data <- remain_data[-val_index, ]
+
+
+sapply(list(Training = nrow(train_data), Validation = nrow(val_data), Testing = nrow(test_data)), print)
+```
+
+
+```{r, echo=TRUE, results='hide'}
+control <- trainControl(
+  method = "cv",      
+  number = 5,           
+  verboseIter = TRUE    
+)
+
+
+tune_grid <- expand.grid(
+  mtry = c(3, 5, 7, 9) 
+)
+
+train_val_data <- rbind(train_data, val_data)
+
+rf_cv <- train(
+  PM2.5_level ~ ., 
+  data = train_val_data,
+  method = "rf",
+  trControl = control,
+  tuneGrid = tune_grid,
+  ntree = 200,          
+  metric = "Accuracy"
+)
+
+print(rf_cv)
+best_mtry <- rf_cv$bestTune$mtry
+cat("The best mtry：", best_mtry, "\n")
+
+```
+
+```{r, echo=TRUE, results='hide'}
+rf_final <- randomForest(
+  PM2.5_level ~ ., 
+  data = train_data,
+  ntree = 600,       
+  mtry = 9,
+  importance = TRUE
+)
+print(rf_final)
+
+```
+
+```{r}
+
+pred_test <- predict(rf_final, test_data)
+
+
+cm <- confusionMatrix(pred_test, test_data$PM2.5_level)
+print(cm)
+
+
+by_class <- as.data.frame(cm$byClass)
+
+metrics_tbl <- by_class %>%
+  tibble::rownames_to_column("Class") %>%
+  transmute(
+    Class,
+    Precision = `Pos Pred Value`,
+    Recall    = Sensitivity,
+    F1        = 2 * (Precision * Recall) / (Precision + Recall)
+  )
+
+
+overall_acc <- cm$overall["Accuracy"]
+
+
+metrics_tbl
+cat("Overall Accuracy:", round(overall_acc, 4), "\n")
+```
+
+```{r, echo=TRUE, fig.width=8, fig.height=3}
+tab <- table(Actual = test_data$PM2.5_level, Predicted = pred_test)
+tab_df <- as.data.frame(tab)
+
+ggplot(tab_df, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "blue") +
+  labs(title = "Confusion Matrix Heatmap", x = "Predicted Class", y = "Actual Class") +
+  theme_minimal()
+
+#varImpPlot(rf_final, main = "Feature Importance")
+```
+
+
+#### 5.4 Decision Tree
+A decision tree is a classification method based on a tree structure, which recursively divides the feature intervals and generates several rules to make predictions. Our group chose this model for this project because we wanted to capture the complex nonlinear relationships between target variables and other data features through decision tree modeling. At the same time, we hope that by choosing the decision tree classification model and the random forest model to echo and contrast with each other, we can better show the characteristics of the different models and choose the one with the best results. The main advantages of the decision tree model are that it is intuitive and straightforward, highly interpretable, and suitable for dealing with many different types of variables. The disadvantages are that the model is intuitive and straightforward, and prone to overfitting problems. In contrast, in the subsequent experiments, we will divide the dataset into training, testing, and validation sets and use k-fold cross-validation for parameter optimization. We will also employ a low learning rate and an early stopping mechanism as a representative approach to avoid overfitting problems. The model parameters are chosen as Precision, Accuracy, Recall, and F1 Score, in order to demonstrate the model's metrics and performance when dealing with the dataset.
+
+#### 5.5 SVM
+Support Vector Machines (SVM) are a commonly used classification algorithm that works by finding an optimal hyperplane to separate data points from different categories as closely as possible. Due to the nonlinear relationship between air quality and meteorological variables, we will employ SVM kernels to better fit complex boundaries. The two key model parameters are C and gamma, which we will select through K-fold cross-validation. For evaluation, the SVM model primarily uses macro-F1 as the core metric. This metric can assess multi-classification problems and reports accuracy, balanced accuracy, AUROC, precision, and recall simultaneously. We will pay particular attention to the prediction performance for the high-pollution category to ensure that the model can not only accurately identify good air quality but also effectively distinguish poor air quality.
+
+
