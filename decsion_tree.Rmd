@@ -1,0 +1,330 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(readr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+
+
+df <- read_csv("df_final_cleaned.csv")
+```
+```{r}
+head(df)
+```
+
+```{r}
+str(df)
+```
+```{r}
+
+table(df$`PM2.5_level`)
+prop.table(table(df$`PM2.5_level`))
+
+```
+
+```{r}
+
+set.seed(233)
+
+index <- createDataPartition(df$PM2.5_level, p = 0.7, list = FALSE)
+train_data <- df[index, ]
+test_data  <- df[-index, ]
+
+train_data <- subset(train_data, select = -c(Date, Time, PM2.5))
+test_data  <- subset(test_data,  select = -c(Date, Time, PM2.5))
+
+prop.table(table(df$PM2.5_level))
+prop.table(table(train_data$PM2.5_level))
+prop.table(table(test_data$PM2.5_level))
+
+
+```
+
+
+
+```{r}
+lv <- c("good","fair","poor","very poor","extremely poor")
+
+train_data$`PM2.5_level` <- factor(train_data$`PM2.5_level`, levels = lv, ordered = TRUE)
+test_data$`PM2.5_level`  <- factor(test_data$`PM2.5_level`,  levels = lv, ordered = TRUE)
+```
+
+```{r}
+set.seed(233)
+
+# 使用 rpart 建立基线决策树模型
+fit_base <- rpart(
+  `PM2.5_level` ~ .,          # 目标变量 vs 所有其他特征
+  data    = train_data,       # 训练集
+  method  = "class",          # 分类任务
+  control = rpart.control(
+    minsplit = 20,            # 节点最少样本数
+    maxdepth = 15,            # 最大深度
+    cp = 0.01                 # 复杂度参数（剪枝前的初始值）
+  ),
+  xval = 10                   # 10折交叉验证
+)
+
+# 查看交叉验证结果
+printcp(fit_base)
+
+```
+
+```{r}
+cp_tab <- fit_base$cptable
+min_id <- which.min(cp_tab[, "xerror"])
+xerr_min <- cp_tab[min_id, "xerror"]
+xerr_1se <- xerr_min + cp_tab[min_id, "xstd"]
+cp_1se <- max(cp_tab[cp_tab[, "xerror"] <= xerr_1se, "CP"])
+
+cp_1se
+fit_pruned <- prune(fit_base, cp = cp_1se)
+
+```
+
+
+```{r}
+# 计算混淆矩阵和性能指标
+pred <- predict(fit_base, test_data, type = "class")
+conf_mat <- confusionMatrix(pred, test_data$PM2.5_level)
+conf_mat
+```
+
+
+```{r}
+set.seed(233)
+
+cp_values <- c(0.01, 0.001, 0.0001)
+results <- data.frame(cp = numeric(), cp_lse = numeric(), xerror_min = numeric())
+
+for (m in cp_values) {
+  cat("Testing cp =", m, "\n")
+  
+  # 1. 训练模型
+  fit_up <- rpart(
+    PM2.5_level ~ .,
+    data = train_data,
+    method = "class",
+    control = rpart.control(
+      minsplit = 20,
+      maxdepth = 15,
+      cp = m
+    )
+  )
+  
+  # 2. 输出结果
+  printcp(fit_up)
+  # 3. 提取cp表，找到最优cp（1-SE）
+  cp_tab <- fit_up$cptable
+  min_id <- which.min(cp_tab[, "xerror"])
+  xerr_min <- cp_tab[min_id, "xerror"]
+  xerr_lse <- xerr_min + cp_tab[min_id, "xstd"]
+  cp_lse <- max(cp_tab[cp_tab[, "xerror"] <= xerr_lse, "CP"])
+  
+  cp_lse
+  # 4. 剪枝模型
+  fit_pruned <- prune(fit_up, cp = cp_lse)
+  
+  # 5. 保存结果
+  results <- rbind(results, data.frame(
+    cp = m,
+    cp_lse = cp_lse,
+    xerror_min = xerr_min
+  ))
+}
+
+print(results)
+```
+
+
+```{r}
+set.seed(233)
+
+minsplit_values <- c(10, 20, 30, 50, 100)
+results <- data.frame(minsplit = numeric(), cp_lse = numeric(), xerror_min = numeric())
+
+for (m in minsplit_values) {
+  cat("Testing minsplit =", m, "\n")
+  
+  # 1. 训练模型
+  fit_up <- rpart(
+    PM2.5_level ~ .,
+    data = train_data,
+    method = "class",
+    control = rpart.control(
+      minsplit = m,
+      maxdepth = 15,
+      cp = 0.001
+    )
+  )
+  
+  # 2. 输出结果
+  printcp(fit_up)
+  # 3. 提取cp表，找到最优cp（1-SE）
+  cp_tab <- fit_up$cptable
+  min_id <- which.min(cp_tab[, "xerror"])
+  xerr_min <- cp_tab[min_id, "xerror"]
+  xerr_lse <- xerr_min + cp_tab[min_id, "xstd"]
+  cp_lse <- max(cp_tab[cp_tab[, "xerror"] <= xerr_lse, "CP"])
+  
+  cp_lse
+  # 4. 剪枝模型
+  fit_pruned <- prune(fit_up, cp = cp_lse)
+  
+  # 5. 保存结果
+  results <- rbind(results, data.frame(
+    minsplit = m,
+    cp_lse = cp_lse,
+    xerror_min = xerr_min
+  ))
+}
+
+print(results)
+```
+
+```{r}
+set.seed(233)
+
+maxdepth_values <- c(5, 8, 10, 12, 15, 18, 20, 25)
+results <- data.frame(maxdepth = numeric(), cp_lse = numeric(), xerror_min = numeric())
+
+for (m in maxdepth_values) {
+  cat("Testing maxdepth =", m, "\n")
+  
+  # 1. 训练模型
+  fit_up <- rpart(
+    PM2.5_level ~ .,
+    data = train_data,
+    method = "class",
+    control = rpart.control(
+      minsplit = 20,
+      maxdepth = m,
+      cp = 0.001
+    )
+  )
+  
+  # 2. 输出结果
+  printcp(fit_up)
+  # 3. 提取cp表，找到最优cp（1-SE）
+  cp_tab <- fit_up$cptable
+  min_id <- which.min(cp_tab[, "xerror"])
+  xerr_min <- cp_tab[min_id, "xerror"]
+  xerr_lse <- xerr_min + cp_tab[min_id, "xstd"]
+  cp_lse <- max(cp_tab[cp_tab[, "xerror"] <= xerr_lse, "CP"])
+  
+  cp_lse
+  # 4. 剪枝模型
+  fit_pruned <- prune(fit_up, cp = cp_lse)
+  
+  # 5. 保存结果
+  results <- rbind(results, data.frame(
+    maxdepth = m,
+    cp_lse = cp_lse,
+    xerror_min = xerr_min
+  ))
+}
+
+print(results)
+```
+
+
+```{r}
+set.seed(233)
+
+# 使用 rpart 建立基线决策树模型
+fit_base <- rpart(
+  `PM2.5_level` ~ .,          # 目标变量 vs 所有其他特征
+  data    = train_data,       # 训练集
+  method  = "class",          # 分类任务
+  control = rpart.control(
+    minsplit = 20,            # 节点最少样本数
+    maxdepth = 15,            # 最大深度
+    cp = 0.001                 # 复杂度参数（剪枝前的初始值）
+  ),
+  xval = 10                   # 10折交叉验证
+)
+
+# 查看交叉验证结果
+
+
+pred <- predict(fit_base, test_data, type = "class")
+conf_mat <- confusionMatrix(pred, test_data$PM2.5_level)
+conf_mat
+
+```
+
+
+
+```{r}
+library(caret)
+library(ggplot2)
+library(reshape2)
+
+# 使用模型进行预测（若尚未生成）
+pred <- predict(fit_base, test_data, type = "class")
+
+# 生成混淆矩阵
+cm <- confusionMatrix(pred, test_data$PM2.5_level)
+print(cm)
+
+# 将混淆矩阵转为数据框形式以便绘图
+cm_df <- as.data.frame(cm$table)
+
+# 绘制热力图
+ggplot(cm_df, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "white", size = 4, fontface = "bold") +
+  scale_fill_gradient(low = "steelblue", high = "darkred") +
+  labs(
+    title = "Confusion Matrix of Decision Tree Model",
+    x = "True Label (Actual)",
+    y = "Predicted Label"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+```{r}
+var_imp <- as.data.frame(varImp(fit_base))
+var_imp$Feature <- rownames(var_imp)
+colnames(var_imp) <- c("Importance", "Feature")
+
+# 绘制条形图
+ggplot(var_imp, aes(x = reorder(Feature, Importance), y = Importance, fill = Importance)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  scale_fill_gradient(low = "skyblue", high = "darkblue") +
+  labs(
+    title = "Feature Importance from Decision Tree Model",
+    x = "Features",
+    y = "Importance"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
