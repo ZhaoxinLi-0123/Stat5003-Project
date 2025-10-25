@@ -1,0 +1,145 @@
+---
+title: "Random forest"
+output: html_document
+date: "2025-10-24"
+---
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(caret)
+library(randomForest)
+library(dplyr)
+library(ggplot2)
+library(e1071) 
+
+set.seed(5003) 
+
+
+df_model <- df_final %>%
+  select(-PM2.5) 
+
+levels_order <- c("good", "fair", "poor", "very poor", "extremely poor")
+df_model$PM2.5_level <- factor(df_model$PM2.5_level, levels = levels_order, ordered = FALSE)
+
+
+train_index <- createDataPartition(df_model$PM2.5_level, p = 0.80, list = FALSE)
+train_data <- df_model[train_index, ]
+remain_data <- df_model[-train_index, ]
+
+val_index <- createDataPartition(remain_data$PM2.5_level, p = 0.80, list = FALSE)
+val_data <- remain_data[val_index, ]
+test_data <- remain_data[-val_index, ]
+
+
+sapply(list(Training = nrow(train_data), Validation = nrow(val_data), Testing = nrow(test_data)), print)
+```
+The model utilizes 64% of the data as the training set, 16% as the validation set, and 20% as the test set. This data partitioning ensures thorough model training while reserving independent data for tuning and final evaluation, thereby mitigating the risk of overfitting. Maintaining consistent data distribution facilitates the assessment of the model's generalization capabilities.
+
+
+
+```{r, echo=TRUE, results='hide'}
+control <- trainControl(
+  method = "cv",      
+  number = 5,           
+  verboseIter = TRUE    
+)
+
+
+tune_grid <- expand.grid(
+  mtry = c(3, 5, 7, 9, 11) 
+)
+
+train_val_data <- rbind(train_data, val_data)
+
+rf_cv <- train(
+  PM2.5_level ~ ., 
+  data = train_val_data,
+  method = "rf",
+  trControl = control,
+  tuneGrid = tune_grid,
+  ntree = 300,          
+  metric = "Accuracy"
+)
+
+print(rf_cv)
+best_mtry <- rf_cv$bestTune$mtry
+cat("The best mtry：", best_mtry, "\n")
+
+```
+During training, 5-fold cross-validation was employed, and Grid Search was used to explore different mtry parameters.The final results indicated that mtry = 9 achieved a cross-validation accuracy of approximately 0.9233, demonstrating that this parameter provides the optimal balance between model complexity and predictive capability.
+
+```{r, echo=TRUE, results='hide'}
+rf_final <- randomForest(
+  PM2.5_level ~ ., 
+  data = train_data,
+  ntree = 1000,       
+  mtry = 9,
+  importance = TRUE
+)
+print(rf_final)
+
+```
+The model's out-of-bag error on the training set is approximately 7.71%, indicating that the model also demonstrates strong generalization performance on unseen data.
+
+```{r}
+
+pred_test <- predict(rf_final, test_data)
+cm <- confusionMatrix(pred_test, test_data$PM2.5_level)
+print(cm)
+
+
+by_class <- as.data.frame(cm$byClass)
+
+metrics_tbl <- by_class %>%
+  tibble::rownames_to_column("Class") %>%
+  transmute(
+    Class,
+    Precision = `Pos Pred Value`,
+    Recall= Sensitivity,
+    F1= 2 * (Precision * Recall) / (Precision + Recall)
+  )
+
+
+overall_acc <- cm$overall["Accuracy"]
+cat("Overall Accuracy:", round(overall_acc, 4), "\n")
+metrics_tbl
+```
+The model demonstrates highly stable performance on the majority category "good".Prediction accuracy is weak for the minority category "extremely poor", primarily due to extreme data imbalance.Overall accuracy exceeds 92%, representing a reasonable and relatively strong performance.
+
+```{r, echo=TRUE, fig.width=8, fig.height=3}
+tab <- table(Actual = test_data$PM2.5_level, Predicted = pred_test)
+tab_df <- as.data.frame(tab)
+
+ggplot(tab_df, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "blue") +
+  labs(title = "Confusion Matrix Heatmap", x = "Predicted Class", y = "Actual Class") +
+  theme_minimal()
+
+```
+Most samples cluster in the “good” category, and the model predicts this class correctly in nearly all cases.Some confusion exists between “fair” and “poor,” indicating overlapping feature distributions.Only a very small number of samples in the “extremely poor” category prove difficult to identify, which is a classic issue with imbalanced data.
+
+```{r}
+imp_mat <- randomForest::importance(rf_final, scale = FALSE)
+imp_df <- data.frame(Feature = rownames(imp_mat), imp_mat, row.names = NULL)
+imp_df2 <- dplyr::select(imp_df, Feature, MeanDecreaseAccuracy)
+top_n <- imp_df2 |>
+  dplyr::arrange(dplyr::desc(MeanDecreaseAccuracy)) |>
+  dplyr::slice_head(n = 15)
+
+fi_plot <- ggplot(top_n, aes(x = reorder(Feature, MeanDecreaseAccuracy),
+                  y = MeanDecreaseAccuracy,
+                  fill = MeanDecreaseAccuracy)) +
+  geom_col(width = 0.7, color = "grey20") +
+  coord_flip() +
+  scale_fill_gradient(low = "#c6dbef", high = "#084594") +  
+  labs(title = "Random Forest Feature Importance (Top 15)",
+       x = "Features", y = "Mean Decrease Accuracy") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none",
+        panel.grid.major.y = element_blank())
+```
+This chart illustrates the key characteristics influencing PM2.5 air pollution level forecasts. Higher values indicate that the characteristic is more critical to the model's predictions.
+
+
+
